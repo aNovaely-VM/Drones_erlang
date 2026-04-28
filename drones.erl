@@ -15,6 +15,22 @@ loop_receive(Pid, [X, Y, Z]) ->
             NouvellePos = [X-1, Y, Z],
             io:format("SERVEUR : Drone recule -> Position : ~p~n", [NouvellePos]),
             loop_receive(Pid, NouvellePos);
+		{Pid, gauche} -> 
+            NouvellePos = [X, Y, Z-1],
+            io:format("SERVEUR : Drone recule -> Position : ~p~n", [NouvellePos]),
+            loop_receive(Pid, NouvellePos);
+		{Pid, droite} -> 
+            NouvellePos = [X, Y, Z+1],
+            io:format("SERVEUR : Drone recule -> Position : ~p~n", [NouvellePos]),
+            loop_receive(Pid, NouvellePos);
+		{Pid, monter} -> 
+            NouvellePos = [X, Y+1, Z],
+            io:format("SERVEUR : Drone recule -> Position : ~p~n", [NouvellePos]),
+            loop_receive(Pid, NouvellePos);
+		{Pid, descendre} -> 
+            NouvellePos = [X, Y-1, Z],
+            io:format("SERVEUR : Drone recule -> Position : ~p~n", [NouvellePos]),
+            loop_receive(Pid, NouvellePos);
         {Pid, fin}  -> io:format("SERVEUR : Drone atterrit. Position finale : ~p~n", [[X, Y, Z]])
     end.
 
