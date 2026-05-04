@@ -3,7 +3,7 @@
 
 start() ->
     Pid = spawn(drones, client, [self()]),
-    loop_receive(Pid, [0, 0, 0]). %% position initiale [X, Y, Z]
+    loop_receive(Pid, [0, 0, 0]).
 
 loop_receive(Pid, [X, Y, Z]) ->
     receive
