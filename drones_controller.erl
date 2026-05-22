@@ -1,108 +1,147 @@
 -module(drones_controller).
 -behaviour(gen_server).
 
-%% Fonctions d'interface
 -export([start_link/0, register_drone/2, update_state/3, get_all_states/0]).
--export([broadcast_mission/3, emergency_stop/0, apply_formation/1]).
-
-%% Callbacks de gen_server
+-export([broadcast_mission/3, emergency_stop/0, apply_formation/1, random_exploration/0, recharge_base/0]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 
 start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
 init([]) ->
-    %% Table ETS partagée pour stocker l'état global
-    ets:new(drones_state, [named_table, public, set]),
-    ets:insert(drones_state, {stations, []}),
-    {ok, #{}}.
+    %% On stocke tout simplement dans le State du gen_server :
+    %% Une map pour les drones et une liste pour les stations.
+    {ok, #{drones => #{}, stations => []}}.
 
-%% Enregistrement d'un drone
+%% =============================================================================
+%% API PUBLIQUE (Appelée par les workers ou le client)
+%% =============================================================================
+
 register_drone(Pid, Id) ->
-    ets:insert(drones_state, {Id, #{pid => Pid, pos => {300.0, 300.0}, battery => 100.0}}),
-    io:format("[Controleur] Drone ~p enregistre (PID: ~p)~n", [Id, Pid]),
-    ok.
+    gen_server:cast(?MODULE, {register, Pid, Id}).
 
-%% Mise à jour des positions envoyée par les drones
 update_state(Id, Pos, Battery) ->
-    case ets:lookup(drones_state, Id) of
-        [{Id, Data}] ->
-            ets:insert(drones_state, {Id, Data#{pos => Pos, battery => Battery}});
-        [] -> 
-            ok
-    end,
-    ok.
+    gen_server:cast(?MODULE, {update, Id, Pos, Battery}).
 
-%% Récupération des données pour l'affichage graphique (Format compatible avec drones_gui)
 get_all_states() ->
-    ListeGlobale = ets:tab2list(drones_state),
-    Stations = chercher_stations(ListeGlobale),
-    DronesList = extraire_uniquement_drones(ListeGlobale),
-    #{drones => maps:from_list(DronesList), stations => Stations}.
+    gen_server:call(?MODULE, get_all_states).
 
-%% Envoi d'une cible unique à tous les drones
 broadcast_mission(X, Y, _Node) ->
-    io:format("[Controleur] Envoi de la cible (~p, ~p) a tout l'essaim~n", [X, Y]),
-    ListeGlobale = ets:tab2list(drones_state),
-    Drones = extraire_uniquement_drones(ListeGlobale),
-    envoyer_cible_rec(Drones, float(X), float(Y)),
-    ok.
+    gen_server:cast(?MODULE, {broadcast_mission, float(X), float(Y)}).
 
-%% Arrêt d'urgence de la flotte
+random_exploration() ->
+    gen_server:cast(?MODULE, random_exploration).
+
 emergency_stop() ->
-    io:format("[Controleur] ARRET D'URGENCE DIFFUSE !~n"),
-    ListeGlobale = ets:tab2list(drones_state),
-    Drones = extraire_uniquement_drones(ListeGlobale),
-    envoyer_stop_rec(Drones),
-    ok.
+    gen_server:cast(?MODULE, emergency_stop).
 
-%% Gestion des formations géométriques
+recharge_base() ->
+    gen_server:cast(?MODULE, recharge_base).
+
 apply_formation(Type) ->
-    ListeGlobale = ets:tab2list(drones_state),
-    Drones = extraire_uniquement_drones(ListeGlobale),
-    NbDrones = length(Drones),
+    gen_server:cast(?MODULE, {apply_formation, Type}).
+
+
+%% =============================================================================
+%% CALLBACKS DU GEN_SERVER (Logique interne)
+%% =============================================================================
+
+handle_cast({register, Pid, Id}, State = #{drones := Drones}) ->
+    NouveauDrone = #{pid => Pid, pos => {300.0, 300.0}, battery => 100.0},
+    NouvellesDrones = maps:put(Id, NouveauDrone, Drones),
+    io:format("[Controleur] Drone ~p enregistre (PID: ~p)~n", [Id, Pid]),
+    {noreply, State#{drones => NouvellesDrones}};
+
+handle_cast({update, Id, Pos, Battery}, State = #{drones := Drones}) ->
+    case maps:find(Id, Drones) of
+        {ok, DataDuDrone} ->
+            DroneMisAJour = DataDuDrone#{pos => Pos, battery => Battery},
+            NouvellesDrones = maps:put(Id, DroneMisAJour, Drones),
+            {noreply, State#{drones => NouvellesDrones}};
+        error ->
+            {noreply, State}
+    end;
+
+handle_cast({broadcast_mission, X, Y}, State = #{drones := Drones}) ->
+    envoyer_cible_rec(maps:values(Drones), X, Y),
+    {noreply, State};
+
+handle_cast(random_exploration, State = #{drones := Drones}) ->
+    exploration_aleatoire_rec(maps:values(Drones)),
+    {noreply, State};
+
+handle_cast(emergency_stop, State = #{drones := Drones}) ->
+    envoyer_stop_rec(maps:values(Drones)),
+    {noreply, State};
+
+handle_cast(recharge_base, State = #{drones := Drones}) ->
+    envoyer_recharge_rec(maps:values(Drones)),
+    {noreply, State};
+
+handle_cast({apply_formation, Type}, State = #{drones := Drones}) ->
+    ListeDrones = maps:values(Drones),
+    NbDrones = length(ListeDrones),
     if
         NbDrones > 0 ->
             Coords = generer_coords(Type, 0, NbDrones),
-            attribuer_formation_rec(Drones, Coords),
-            io:format("[Controleur] Formation ~p executee~n", [Type]);
+            attribuer_formation_rec(ListeDrones, Coords);
         true ->
-            io:format("[Controleur] Aucun drone disponible~n")
+            ok
     end,
-    ok.
+    {noreply, State};
+
+handle_cast(_Msg, State) ->
+    {noreply, State}.
+
+handle_call(get_all_states, _From, State) ->
+    %% On renvoie le State tel quel car il a déjà la bonne structure pour la GUI
+    {reply, State, State};
+
+handle_call(_Req, _From, State) ->
+    {reply, ok, State}.
+
+handle_info(_Info, State) -> {noreply, State}.
+terminate(_Reason, _State) -> ok.
+code_change(_Old, State, _Extra) -> {ok, State}.
 
 %% =============================================================================
-%% FONCTIONS RECURSIVES DE PARCOURS (Style purement académique)
+%% FONCTIONS RECURSIVES DE PARCOURS
 %% =============================================================================
-
-chercher_stations([]) -> [];
-chercher_stations([{stations, S} | _]) -> S;
-chercher_stations([_ | Reste]) -> chercher_stations(Reste).
-
-extraire_uniquement_drones([]) -> [];
-extraire_uniquement_drones([{stations, _} | Reste]) -> extraire_uniquement_drones(Reste);
-extraire_uniquement_drones([{Id, Data} | Reste]) -> [{Id, Data} | extraire_uniquement_drones(Reste)].
 
 envoyer_cible_rec([], _X, _Y) -> ok;
-envoyer_cible_rec([{_Id, Data} | Reste], X, Y) ->
-    Pid = maps:get(pid, Data),
+envoyer_cible_rec([DroneData | Reste], X, Y) ->
+    Pid = maps:get(pid, DroneData),
     gen_server:cast(Pid, {eval_mission, X, Y}),
     envoyer_cible_rec(Reste, X, Y).
 
+exploration_aleatoire_rec([]) -> ok;
+exploration_aleatoire_rec([DroneData | Reste]) ->
+    Pid = maps:get(pid, DroneData),
+    RandX = float(rand:uniform(500) + 50),
+    RandY = float(rand:uniform(500) + 50),
+    gen_server:cast(Pid, {eval_mission, RandX, RandY}),
+    exploration_aleatoire_rec(Reste).
+
 envoyer_stop_rec([]) -> ok;
-envoyer_stop_rec([{_Id, Data} | Reste]) ->
-    Pid = maps:get(pid, Data),
+envoyer_stop_rec([DroneData | Reste]) ->
+    Pid = maps:get(pid, DroneData),
     gen_server:cast(Pid, stop),
     envoyer_stop_rec(Reste).
 
+envoyer_recharge_rec([]) -> ok;
+envoyer_recharge_rec([DroneData | Reste]) ->
+    Pid = maps:get(pid, DroneData),
+    gen_server:cast(Pid, recharge),
+    envoyer_recharge_rec(Reste).
+
 attribuer_formation_rec([], _) -> ok;
 attribuer_formation_rec(_, []) -> ok;
-attribuer_formation_rec([{_Id, Data} | ResteDrones], [{X, Y} | ResteCoords]) ->
-    Pid = maps:get(pid, Data),
+attribuer_formation_rec([DroneData | ResteDrones], [{X, Y} | ResteCoords]) ->
+    Pid = maps:get(pid, DroneData),
     gen_server:cast(Pid, {eval_mission, X, Y}),
     attribuer_formation_rec(ResteDrones, ResteCoords).
 
-%% Génération des coordonnées mathématiques
+%% Génération mathématique des positions (Centre 300, 300)
 generer_coords(_Type, Max, Max) -> [];
 generer_coords(carre, I, Max) ->
     Cote = ceil(math:sqrt(Max)),
@@ -129,10 +168,3 @@ generer_coords(cercle, I, Max) ->
     X = 300.0 + Rayon * math:cos(Angle),
     Y = 300.0 + Rayon * math:sin(Angle),
     [{X, Y} | generer_coords(cercle, I + 1, Max)].
-
-%% Callbacks obligatoires inutilisés
-handle_call(_Req, _From, State) -> {reply, ok, State}.
-handle_cast(_Msg, State) -> {noreply, State}.
-handle_info(_Info, State) -> {noreply, State}.
-terminate(_Reason, _State) -> ok.
-code_change(_Old, State, _Extra) -> {ok, State}.

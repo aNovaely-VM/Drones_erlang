@@ -18,7 +18,7 @@ init([]) ->
     wxFrame:show(Frame),
     
     %% Cadence de rafraîchissement : 20 fois par seconde (toutes les 50ms)
-    timer:send_interval(50, refresh_tick),
+    timer:send_interval(16, refresh_tick),
     {ok, #{panel => Panel}}.
 
 handle_info(refresh_tick, State = #{panel := Panel}) ->
